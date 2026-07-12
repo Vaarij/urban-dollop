@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "self-optimize"
+version = "0.1.0"
+description = "Python project optimizer driven by AST analysis, LLM candidate generation, and iterative evaluation."
+readme = "INTENT.md"
+requires-python = ">=3.12"
+dependencies = [
+    "flask",
+    "ollama",
+]
+
+[project.scripts]
+self-optimize = "self_optimize.cli:main"
+self_optimize = "self_optimize.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["self_optimize"]
+
+[tool.uv]
+package = true
