@@ -2,6 +2,7 @@ import logging
 from project_loader import file_discover, import_graph_builder, entrypoint_detect
 # NOTE: as of right now ast parser functions as more of a project loader, might be worth it to move into project_loader
 from analyze import ast_parser, hotspot_detector
+from context_builder import prompt_packager
 from pathlib import Path
 import state_storage as storage
 
@@ -14,6 +15,7 @@ test_dir = Path("/Users/vaarijbetala/Desktop/model-optimize")
 # NOTE: add logic for state to only be used in case the project crashes at some point
 # NOTE: if building a state loader, you also need a manifest which documents the current requirements
 # NOTE: kind of tedious to pass state dir everytime, consider making state dir a class with the dir as a constant, because then I can add to gitignore with _local
+# NOTE: On startup, make sure a directory called optimized exists, where the final files will be stored.
 STATE_DIR = Path("state")
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -55,6 +57,9 @@ def main():
     storage.save_ast_graphs(STATE_DIR, all_asts)
     
     file_name, score = hotspot_detector.find_max_hotspots(all_asts)
+    # print(all_asts[str(file_name)])
+    
+    print(prompt_packager.build_context_file(file_name, "generate_complexity_metrics", "function", all_asts[str(file_name)]))
     
     logger.info("Ended")
     

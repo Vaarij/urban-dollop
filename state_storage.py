@@ -4,7 +4,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# NOTE: Crazy amounts of duplicated code
+# NOTE: Crazy amounts of duplicated code, consolidate
+# NOTE: For even better performance at the risk of adding external libraries use redis
 
 def save_file_list(state_dir: Path, file_list: list) -> None:
     file_discovery_path = state_dir / "explore" / "files_list.json"
