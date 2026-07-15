@@ -2,8 +2,6 @@ from pathlib import Path
 import logging
 # from config import PROJECT_SUBDIR
 
-# NOTE: Make this an absolute path eventually
-# p = Path(PROJECT_SUBDIR)
 logger = logging.getLogger(__name__)
 
 SKIPPED_DIRS = [".gitignore", "cache", ".git", ".venv", "venv", "env", "__pycache__",

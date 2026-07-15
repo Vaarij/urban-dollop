@@ -24,20 +24,16 @@ def _max_nested_elements(start: ast.AST) -> int:
     Using an explicit stack avoids recursive errors.
     """
     max_nesting = 0
-    # The stack stores tuples of (node, current_depth)
     stack = [(start, 0)]
     
     while stack:
         node, current_depth = stack.pop()
         
-        # We only increment depth for structural statement blocks
         is_stmt_block = isinstance(node, (ast.If, ast.For, ast.While, ast.Try, ast.With, ast.FunctionDef, ast.ClassDef))
         
-        # If it's a structural statement block (and not the entry node), increment depth
         new_depth = current_depth + 1 if (is_stmt_block and node is not start) else current_depth
         max_nesting = max(max_nesting, new_depth)
         
-        # Add all child nodes to the stack to continue exploring deeper
         for child in ast.iter_child_nodes(node):
             stack.append((child, new_depth))
             
@@ -52,7 +48,6 @@ def _max_conditionals(start: ast.AST) -> int:
     
     for sub_node in ast.walk(start):
         if isinstance(sub_node, ast.BoolOp):
-            # Flatten out nested BoolOps using a stack
             total = 0
             bool_stack = [sub_node]
             
