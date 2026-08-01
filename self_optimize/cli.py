@@ -22,6 +22,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--recovery",
         help="Optional recovery stage or token to resume from.",
     )
+    parser.add_argument(
+        "--agents",
+        type=int,
+        default=1,
+        help="Number of concurrent Codex candidate workers to run.",
+    )
+    parser.add_argument(
+        "--codex-model",
+        help="Optional Codex model override for candidate generation.",
+    )
     return parser
 
 
@@ -34,6 +44,12 @@ def main(argv: list[str] | None = None) -> int:
     runtime_config = config.build_runtime_config(
         target=args.target,
         recovery_token=args.recovery,
+        agent_count=args.agents,
+        codex_model=args.codex_model,
     )
     config.init_config(runtime_config)
     return run_main(runtime_config)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

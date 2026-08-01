@@ -1,25 +1,41 @@
-from pathlib import Path
-from typing import Tuple, Any
+from __future__ import annotations
 
-""" Don't write this to state, it can be rebuilt from ast_graphs.json anytime"""
-def find_max_hotspots(ast_graph: dict) -> Tuple[Any | None, int]:
-    # NOTE: Score is max nest depth + max conditionals
-    highest_score = -1
-    best_file = None
+from pathlib import Path
+
+
+class NoHotspotCandidateError(ValueError):
+    """Raised when no AST blocks are available to score."""
+
+
+def _score_function(block: dict[str, object]) -> int:
+    return int(block.get("max_conditionals", 0)) + int(block.get("max_nesting", 0))
+
+
+def _score_file(blocks: object) -> int:
+    if not isinstance(blocks, (list, tuple)) or len(blocks) != 2:
+        return 0
+
+    functions, classes = blocks
+    function_score = sum(_score_function(function) for function in functions)
+    class_score = sum(
+        _score_function(method)
+        for class_block in classes
+        for method in class_block.get("class_methods", [])
+    )
+    return function_score + class_score
+
+
+def find_max_hotspots(ast_graph: dict[str, object]) -> tuple[Path, int]:
+    best_file: Path | None = None
+    highest_score: int | None = None
 
     for file_path, blocks in ast_graph.items():
-        # The data structure separates standalone functions into blocks[0]
-        functions = blocks[0]
-        
-        # Calculate total score for the current file
-        file_score = sum(func["max_conditionals"] + func["max_nesting"] for func in functions)
-        
-        # Track the file with the highest score
-        if file_score > highest_score:
+        file_score = _score_file(blocks)
+        if highest_score is None or file_score > highest_score:
             highest_score = file_score
-            best_file = file_path
+            best_file = Path(file_path)
 
-    # NOTE: this is hacky, make it work better and throw an exception
-    best_file_path = Path(best_file)
-    
-    return best_file_path, highest_score
+    if best_file is None or highest_score is None:
+        raise NoHotspotCandidateError("No AST hotspot candidates were available.")
+
+    return best_file, highest_score

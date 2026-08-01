@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -43,6 +44,7 @@ class RuntimeConfig:
     target_dir: Path
     state_dir: Path
     optimized_dir: Path
+    optimized_run_dir: Path
     local_dir: Path
     config_path: Path
     recovery_token: str | None = None
@@ -52,6 +54,14 @@ class RuntimeConfig:
     test_targets: list[str] = field(default_factory=list)
     benchmark_targets: list[str] = field(default_factory=list)
     agent_count: int = 1
+    codex_model: str | None = None
+    candidate_sample_count: int = 10
+    evaluation_rounds: int = 2
+    survivor_count: int = 3
+    combination_enabled: bool = True
+    runner_plan: list[str] = field(default_factory=lambda: ["dynamic", "static"])
+    max_expansions: int = 2
+    swap_after_stalled_rounds: int = 1
     secret_references: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_SECRET_REFERENCES))
     resolved_secrets: dict[str, str | None] = field(default_factory=dict, repr=False)
 
@@ -61,6 +71,7 @@ class RuntimeConfig:
             "target_dir": str(self.target_dir),
             "state_dir": str(self.state_dir),
             "optimized_dir": str(self.optimized_dir),
+            "optimized_run_dir": str(self.optimized_run_dir),
             "local_dir": str(self.local_dir),
             "config_path": str(self.config_path),
             "recovery_token": self.recovery_token,
@@ -70,6 +81,14 @@ class RuntimeConfig:
             "test_targets": self.test_targets,
             "benchmark_targets": self.benchmark_targets,
             "agent_count": self.agent_count,
+            "codex_model": self.codex_model,
+            "candidate_sample_count": self.candidate_sample_count,
+            "evaluation_rounds": self.evaluation_rounds,
+            "survivor_count": self.survivor_count,
+            "combination_enabled": self.combination_enabled,
+            "runner_plan": self.runner_plan,
+            "max_expansions": self.max_expansions,
+            "swap_after_stalled_rounds": self.swap_after_stalled_rounds,
             "secret_references": self.secret_references,
         }
 
@@ -115,10 +134,18 @@ def _resolve_secrets(secret_references: dict[str, str]) -> dict[str, str | None]
     }
 
 
+def _build_optimized_run_dir(workspace_root: Path, target_dir: Path) -> Path:
+    timestamp = datetime.now().strftime("%m-%d-%y-%H-%M")
+    run_name = f"{target_dir.name}-{timestamp}"
+    return workspace_root / "optimized" / run_name
+
+
 def build_runtime_config(
     target: str | Path,
     recovery_token: str | None = None,
     workspace_root: Path | None = None,
+    agent_count: int = 1,
+    codex_model: str | None = None,
 ) -> RuntimeConfig:
     resolved_workspace = workspace_root.resolve() if workspace_root else Path.cwd().resolve()
     target_dir = _normalize_target_path(target, resolved_workspace)
@@ -127,15 +154,20 @@ def build_runtime_config(
         raise FileNotFoundError(f"Target directory does not exist: {target_dir}")
     if not target_dir.is_dir():
         raise NotADirectoryError(f"Target path is not a directory: {target_dir}")
+    if agent_count < 1:
+        raise ValueError("agent_count must be at least 1")
 
     runtime_config = RuntimeConfig(
         workspace_root=resolved_workspace,
         target_dir=target_dir,
         state_dir=resolved_workspace / "state",
         optimized_dir=resolved_workspace / "optimized",
+        optimized_run_dir=_build_optimized_run_dir(resolved_workspace, target_dir),
         local_dir=resolved_workspace / "_local",
         config_path=resolved_workspace / "config.json",
         recovery_token=recovery_token,
+        agent_count=agent_count,
+        codex_model=codex_model,
     )
     runtime_config.resolved_secrets = _resolve_secrets(runtime_config.secret_references)
     return runtime_config

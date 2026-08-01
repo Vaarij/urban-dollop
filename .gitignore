@@ -33,6 +33,7 @@ coverage.xml
 
 # Local project runtime/state
 _local/
+optimized/
 state/
 
 # Local environment config
