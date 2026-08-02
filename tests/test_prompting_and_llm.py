@@ -179,7 +179,7 @@ class LlmAgentTests(unittest.TestCase):
                 with self.assertLogs("llm.llmagent", level="INFO") as logs:
                     candidates = llmagent.generate_candidates({}, file_path, 3, root_dir, agent_count=2)
 
-        self.assertEqual(candidates, ["first", "second", "third"])
+        self.assertEqual([candidate.file_source for candidate in candidates], ["first", "second", "third"])
         joined = "\n".join(logs.output)
         self.assertIn("Projected candidate prompt volume", joined)
         self.assertIn("1 unknown", joined)
@@ -213,7 +213,7 @@ class LlmAgentTests(unittest.TestCase):
             with mock.patch("llm.llmagent._run_candidate_job", side_effect=fake_run):
                 candidates = llmagent.generate_candidates({}, file_path, 2, root_dir, agent_count=2)
 
-        self.assertEqual(candidates, ["second"])
+        self.assertEqual([candidate.file_source for candidate in candidates], ["second"])
 
     def test_generate_candidates_raises_summary_error_when_all_jobs_fail(self) -> None:
         def fake_run(spec, file_path, working_dir, model=None, codex_command=llmagent.DEFAULT_CODEX_COMMAND):
@@ -265,7 +265,7 @@ class LlmAgentTests(unittest.TestCase):
                     root_dir,
                 )
 
-        self.assertEqual(result, ["combined"])
+        self.assertEqual([candidate.file_source for candidate in result], ["combined"])
         self.assertIn("Current retained baseline", captured_prompts[0])
         self.assertIn('"score": 3', captured_prompts[0])
         self.assertIn("Avoid no-op combinations", captured_prompts[0])

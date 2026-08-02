@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import logging
 from pathlib import Path
@@ -20,6 +20,7 @@ class CandidatePayload:
     candidate_id: str
     file_source: str
     reason: str
+    external_dependencies: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -46,8 +47,21 @@ def _build_output_schema(schema_path: Path) -> None:
             "candidate_id": {"type": "string"},
             "file_source": {"type": "string"},
             "reason": {"type": "string"},
+            "external_dependencies": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "kind": {"type": "string", "enum": ["helper", "global", "import", "class_member"]},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["name", "kind", "reason"],
+                    "additionalProperties": False,
+                },
+            },
         },
-        "required": ["candidate_id", "file_source", "reason"],
+        "required": ["candidate_id", "file_source", "reason", "external_dependencies"],
         "additionalProperties": False,
     }
     schema_path.write_text(json.dumps(schema), encoding="UTF-8")
@@ -67,6 +81,7 @@ def _extract_json_payload(raw_output: str) -> CandidatePayload:
         candidate_id=str(payload["candidate_id"]),
         file_source=str(payload["file_source"]),
         reason=str(payload["reason"]),
+        external_dependencies=[dict(item) for item in payload.get("external_dependencies", [])],
     )
 
 
@@ -169,6 +184,7 @@ Rules:
 - Prefer high-signal simplifications over cosmetic rewrites.
 - Avoid trivial local refactors like aliasing lookups, formatting-only changes, or condensing branches unless they clearly simplify control flow.
 - Make this candidate meaningfully different from the others.
+- Change only the editable region in the optimization context. If a new module helper, global, import, or class member is the only viable option, list it in external_dependencies with its name, kind, and a specific reason; it must be directly referenced by the target symbol.
 
 Optimization context:
 {context_json}
@@ -205,6 +221,7 @@ Rules:
 - Lower AST complexity is the primary goal.
 - Behavioral preservation is mandatory.
 - Avoid no-op combinations or cosmetic merges without a real simplification.
+- Keep edits inside the permitted region. Declare every unavoidable external dependency in external_dependencies.
 
 Optimization context:
 {context_json}
@@ -381,9 +398,9 @@ def _execute_candidate_specs(
     agent_count: int,
     model: str | None = None,
     codex_command: tuple[str, ...] = DEFAULT_CODEX_COMMAND,
-) -> list[str]:
+) -> list[CandidatePayload]:
     worker_count = max(1, min(agent_count, len(specs)))
-    ordered_candidates: dict[int, str] = {}
+    ordered_candidates: dict[int, CandidatePayload] = {}
     results: list[CandidateJobResult] = []
     failed_indices: list[int] = []
 
@@ -405,7 +422,7 @@ def _execute_candidate_specs(
             if result.status != "completed" or result.payload is None:
                 failed_indices.append(result.candidate_index)
                 continue
-            ordered_candidates[result.candidate_index] = result.payload.file_source
+            ordered_candidates[result.candidate_index] = result.payload
             logger.info(
                 "Candidate %s for %s used %s tokens in %.3fs",
                 result.payload.candidate_id,
@@ -440,7 +457,7 @@ def generate_candidates(
     agent_count: int = 1,
     model: str | None = None,
     codex_command: tuple[str, ...] = DEFAULT_CODEX_COMMAND,
-) -> list[str]:
+) -> list[CandidatePayload]:
     specs = _build_candidate_specs(context, file_path, sample_count)
     _log_prompt_projection(file_path, specs)
     return _execute_candidate_specs(
@@ -463,7 +480,7 @@ def generate_combined_candidates(
     agent_count: int = 1,
     model: str | None = None,
     codex_command: tuple[str, ...] = DEFAULT_CODEX_COMMAND,
-) -> list[str]:
+) -> list[CandidatePayload]:
     specs = _build_combination_specs(
         context,
         file_path,

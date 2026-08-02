@@ -265,7 +265,7 @@ def _optimize_files(
             survivor_count=runtime_config.survivor_count,
             combination_enabled=runtime_config.combination_enabled,
             combination_generator=_combine_candidates if runtime_config.combination_enabled else None,
-            editable_spans=region.editable_spans if region else None,
+            region=region,
         )
         print(f"[self-optimize] selected passing candidate for {working_file_path}")
         optimized_project_dir = final_candidate(
@@ -309,6 +309,10 @@ def _optimize_files(
                     if evaluation.final_record is not None
                     else False
                 ),
+                "guard": [
+                    {"outcome": result.outcome, "reasons": list(result.reasons), "dependencies": list(result.dependencies)}
+                    for result in evaluation.guard_results
+                ],
             }
         )
 

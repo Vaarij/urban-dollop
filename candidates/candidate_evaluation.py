@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from difflib import ndiff
+from difflib import SequenceMatcher, ndiff
+import ast
+import importlib.util
 import logging
 from pathlib import Path
 import shlex
@@ -10,18 +12,152 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Callable
+from typing import Callable, Iterable
+
+from orchestrator.region import Criterion, RegionProposal
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalDependency:
+    name: str
+    kind: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class GuardResult:
+    accepted: bool
+    outcome: str
+    reasons: tuple[str, ...] = ()
+    dependencies: tuple[str, ...] = ()
+
+
+def _within_span(start: int, end: int, spans: tuple[tuple[int, int], ...], insertion: bool = False) -> bool:
+    return any(span_start <= start and end <= span_end if not insertion else span_start <= start <= span_end for span_start, span_end in spans)
+
+
+def _module_declarations(source: str) -> dict[str, tuple[str, int, int]]:
+    tree = ast.parse(source)
+    declarations: dict[str, tuple[str, int, int]] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            declarations[node.name] = ("helper", node.lineno - 1, node.end_lineno or node.lineno)
+        elif isinstance(node, ast.ClassDef):
+            declarations[node.name] = ("class_member", node.lineno - 1, node.end_lineno or node.lineno)
+            for child in node.body:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    declarations[f"{node.name}.{child.name}"] = ("class_member", child.lineno - 1, child.end_lineno or child.lineno)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    declarations[target.id] = ("global", node.lineno - 1, node.end_lineno or node.lineno)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                name = alias.asname or (alias.name if isinstance(node, ast.Import) else alias.name.split(".")[-1])
+                declarations[name] = ("import", node.lineno - 1, node.end_lineno or node.lineno)
+    return declarations
+
+
+def _import_modules(source: str) -> dict[str, str]:
+    modules: dict[str, str] = {}
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                modules[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                modules[alias.asname or alias.name] = node.module
+    return modules
+
+
+def _target_references(source: str, symbol: str) -> set[str]:
+    tree = ast.parse(source)
+    target: ast.AST | None = None
+    class_name, _, method_name = symbol.partition(".")
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == symbol:
+            target = node
+        elif isinstance(node, ast.ClassDef) and method_name and node.name == class_name:
+            target = next((child for child in node.body if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name == method_name), None)
+    if target is None:
+        return set()
+    references = {node.id for node in ast.walk(target) if isinstance(node, ast.Name)}
+    if method_name:
+        references.update(f"{class_name}.{node.attr}" for node in ast.walk(target) if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"})
+    return references
+
+
+def _is_stdlib_import(name: str) -> bool:
+    root = name.split(".", 1)[0]
+    return root in sys.stdlib_module_names or importlib.util.find_spec(root) is not None and not (importlib.util.find_spec(root).origin or "").startswith(str(Path.cwd()))
+
+
+def validate_region_candidate(
+    original: str,
+    candidate: str,
+    region: RegionProposal | None,
+    dependencies: Iterable[ExternalDependency] = (),
+) -> GuardResult:
+    if region is None:
+        return GuardResult(True, "unrestricted")
+    try:
+        original_declarations = _module_declarations(original)
+        candidate_declarations = _module_declarations(candidate)
+        references = _target_references(candidate, region.criterion.symbol)
+        imports = _import_modules(candidate)
+    except SyntaxError as exc:
+        return GuardResult(False, "rejected", (f"invalid syntax: {exc.msg}",))
+    declared = {dependency.name: dependency for dependency in dependencies}
+    new_declarations = {name: value for name, value in candidate_declarations.items() if name not in original_declarations}
+    reasons: list[str] = []
+    accepted_dependencies: set[str] = set()
+    opcodes = SequenceMatcher(None, original.splitlines(), candidate.splitlines()).get_opcodes()
+    for tag, old_start, old_end, new_start, new_end in opcodes:
+        if tag == "equal" or _within_span(old_start, old_end, region.editable_spans, tag == "insert"):
+            continue
+        matching = [
+            (name, declaration)
+            for name, declaration in new_declarations.items()
+            if declaration[1] <= new_start and new_end <= declaration[2]
+        ]
+        if len(matching) != 1:
+            reasons.append(f"out-of-region {tag} at original lines {old_start + 1}-{old_end}")
+            continue
+        name, (kind, _start, _end) = matching[0]
+        dependency = declared.get(name)
+        if dependency is None or dependency.kind != kind or not dependency.reason.strip():
+            reasons.append(f"undeclared or unjustified {kind} dependency {name}")
+        elif name not in references:
+            reasons.append(f"dependency {name} is not referenced by {region.criterion.symbol}")
+        elif kind == "import" and not _is_stdlib_import(imports.get(name, name)):
+            reasons.append(f"dependency {name} is not a stdlib import")
+        else:
+            accepted_dependencies.add(name)
+    for name, (kind, _start, _end) in new_declarations.items():
+        dependency = declared.get(name)
+        if dependency is None or dependency.kind != kind or not dependency.reason.strip():
+            reasons.append(f"undeclared or unjustified {kind} dependency {name}")
+        elif name not in references:
+            reasons.append(f"dependency {name} is not referenced by {region.criterion.symbol}")
+        elif kind == "import" and not _is_stdlib_import(imports.get(name, name)):
+            reasons.append(f"dependency {name} is not a stdlib import")
+        else:
+            accepted_dependencies.add(name)
+    for name, dependency in declared.items():
+        if name not in accepted_dependencies:
+            reasons.append(f"declared dependency {name} was not used by an allowed addition")
+    if reasons:
+        return GuardResult(False, "rejected", tuple(sorted(set(reasons))))
+    outcome = "accepted_justified_dependency" if accepted_dependencies else "accepted_region_only"
+    return GuardResult(True, outcome, dependencies=tuple(sorted(accepted_dependencies)))
 
 
 def _changes_only_within_spans(original: str, candidate: str, spans: tuple[tuple[int, int], ...] | None) -> bool:
     if spans is None:
         return True
-    original_lines = original.splitlines()
-    candidate_lines = candidate.splitlines()
-    if len(original_lines) != len(candidate_lines):
-        return False
-    allowed = {line for start, end in spans for line in range(start, end)}
-    return all(before == after or index in allowed for index, (before, after) in enumerate(zip(original_lines, candidate_lines)))
+    region = RegionProposal(Criterion(Path("<legacy>"), "", 0, 0), spans)
+    return validate_region_candidate(original, candidate, region).accepted
 
 from analyze import ast_parser
 
@@ -54,6 +190,7 @@ class CandidateRecord:
     outcome_label: str = "behavior-preserving cleanup"
     confidence_label: str = "safe but unproven"
     meets_minimum_evidence: bool = False
+    external_dependencies: tuple[ExternalDependency, ...] = ()
 
     def sort_key(self) -> tuple[int, float, int]:
         benchmark_value = self.benchmark_delta if self.benchmark_delta is not None else float("inf")
@@ -75,6 +212,7 @@ class CandidateSeed:
     source: str
     origin: str
     lineage: tuple[str, ...]
+    external_dependencies: tuple[ExternalDependency, ...] = ()
 
 
 @dataclass(slots=True)
@@ -94,6 +232,7 @@ class EvaluationResult:
     original_benchmark_seconds: float | None = None
     completed_with_evidence: bool = False
     confidence_label: str = "safe but unproven"
+    guard_results: list[GuardResult] = field(default_factory=list)
 
 
 def _build_test_commands(test_targets: list[str], project_dir: Path | None = None) -> list[list[str]]:
@@ -272,6 +411,20 @@ def _dedupe_seeds(seeds: list[CandidateSeed]) -> list[CandidateSeed]:
     ]
 
 
+def _candidate_seed(candidate: object, index: int) -> CandidateSeed:
+    if isinstance(candidate, str):
+        return CandidateSeed(candidate, "generated", (f"generated-{index}",))
+    source = getattr(candidate, "file_source", None)
+    if not isinstance(source, str):
+        raise TypeError("Candidate must be source text or expose file_source.")
+    dependencies = tuple(
+        ExternalDependency(str(item.get("name", "")), str(item.get("kind", "")), str(item.get("reason", "")))
+        for item in getattr(candidate, "external_dependencies", [])
+        if isinstance(item, dict)
+    )
+    return CandidateSeed(source, "generated", (f"generated-{index}",), dependencies)
+
+
 def _evaluate_seed(
     seed: CandidateSeed,
     candidate_index: int,
@@ -324,11 +477,12 @@ def _evaluate_seed(
             outcome_label=_label_outcome(mutation_kind, complexity_delta, benchmark_delta),
             confidence_label=_label_confidence(meets_minimum_evidence, benchmark_delta),
             meets_minimum_evidence=meets_minimum_evidence,
+            external_dependencies=seed.external_dependencies,
         )
 
 
 def evaluate_candidates(
-    candidates: list[str],
+    candidates: list[object],
     file_name: Path,
     target_dir: Path,
     test_targets: list[str],
@@ -337,17 +491,25 @@ def evaluate_candidates(
     benchmark_targets: list[str] | None = None,
     survivor_count: int = 3,
     combination_enabled: bool = False,
-    combination_generator: Callable[[str, list[CandidateRecord]], list[str]] | None = None,
+    combination_generator: Callable[[str, list[CandidateRecord]], list[object]] | None = None,
+    region: RegionProposal | None = None,
     editable_spans: tuple[tuple[int, int], ...] | None = None,
 ) -> EvaluationResult:
     original_source = file_name.read_text(encoding="UTF-8")
-    candidates = [candidate for candidate in candidates if _changes_only_within_spans(original_source, candidate, editable_spans)]
+    if region is None and editable_spans is not None:
+        region = RegionProposal(Criterion(file_name, "", 0, 0), editable_spans)
+    seeds = [_candidate_seed(candidate, index) for index, candidate in enumerate(candidates)]
+    guard_results = [validate_region_candidate(original_source, seed.source, region, seed.external_dependencies) for seed in seeds]
+    for result in guard_results:
+        if not result.accepted:
+            logger.info("Rejected candidate for %s: %s", file_name, "; ".join(result.reasons))
+    seeds = [seed for seed, result in zip(seeds, guard_results) if result.accepted]
     original_score = _score_source(original_source, str(file_name))
     benchmark_targets = benchmark_targets or []
     original_benchmark_seconds = _benchmark_total(run_project_benchmarks(target_dir, benchmark_targets))
 
-    if not candidates:
-        logger.info("Optimizer did not find a better candidate for %s: no generated candidates", file_name)
+    if not seeds:
+        logger.info("Optimizer did not find a better candidate for %s: no region-valid candidates", file_name)
         return EvaluationResult(
             final_source=original_source,
             final_record=None,
@@ -355,6 +517,7 @@ def evaluate_candidates(
             original_benchmark_seconds=original_benchmark_seconds,
             completed_with_evidence=original_benchmark_seconds is not None,
             confidence_label="safe but unproven",
+            guard_results=guard_results,
         )
 
     retained_record = CandidateRecord(
@@ -376,12 +539,7 @@ def evaluate_candidates(
     )
     current_candidates = _dedupe_seeds(
         [
-            CandidateSeed(
-                source=candidate_source,
-                origin="generated",
-                lineage=(f"generated-{candidate_index}",),
-            )
-            for candidate_index, candidate_source in enumerate(candidates)
+            seed for seed in seeds
         ]
     )
     round_summaries: list[RoundSummary] = []
@@ -432,17 +590,26 @@ def evaluate_candidates(
             combined_seeds = _dedupe_seeds(
                 [
                     CandidateSeed(
-                        source=combined_source,
+                        source=_candidate_seed(combined_source, combined_index).source,
                         origin="combined",
                         lineage=(
                             f"combined-{round_index}-{combined_index}",
                             "baseline",
                             *(candidate.lineage[0] for candidate in survivors[: max(1, survivor_count)]),
                         ),
+                        external_dependencies=_candidate_seed(combined_source, combined_index).external_dependencies,
                     )
                     for combined_index, combined_source in enumerate(combined_sources)
                 ]
             )
+            combined_guard_results = [
+                validate_region_candidate(original_source, seed.source, region, seed.external_dependencies)
+                for seed in combined_seeds
+            ]
+            guard_results.extend(combined_guard_results)
+            combined_seeds = [
+                seed for seed, result in zip(combined_seeds, combined_guard_results) if result.accepted
+            ]
             for combined_index, combined_seed in enumerate(combined_seeds):
                 record = _evaluate_seed(
                     combined_seed,
@@ -501,6 +668,7 @@ def evaluate_candidates(
                     source=candidate.source,
                     origin=candidate.origin,
                     lineage=candidate.lineage,
+                    external_dependencies=candidate.external_dependencies,
                 )
                 for candidate in survivors
             ]
@@ -522,6 +690,7 @@ def evaluate_candidates(
             final_record is not None and final_record.meets_minimum_evidence
         ),
         confidence_label=final_record.confidence_label if final_record is not None else "safe but unproven",
+        guard_results=guard_results,
     )
 
 
