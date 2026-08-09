@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import tempfile
 import textwrap
 import unittest
@@ -8,7 +9,7 @@ from pathlib import Path
 import config
 from analyze import ast_parser, hotspot_detector
 from analyze.interfunction_calls import analyze_interfunction_calls, build_function_graph
-from project_loader import entrypoint_detect, file_discover, import_graph_builder
+from project_loader import entrypoint_detect, file_discover, import_graph_builder, static_slice
 
 
 def _write_file(path: Path, source: str) -> None:
@@ -17,6 +18,81 @@ def _write_file(path: Path, source: str) -> None:
 
 
 class ProjectLoadingAndGraphingTests(unittest.TestCase):
+    def test_static_slice_records_assignments_and_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            file_path = Path(temp_dir_name) / "module.py"
+            _write_file(
+                file_path,
+                """
+                total = 3
+                doubled = total * 2
+                left = right = doubled + offset
+                annotated: int = right
+                """,
+            )
+
+            tree = ast.parse(file_path.read_text(encoding="UTF-8"))
+            variables = static_slice._variable_finder(tree)
+
+            self.assertEqual(
+                variables,
+                [
+                    static_slice.VariableDefinition("total", 1),
+                    static_slice.VariableDefinition("doubled", 2),
+                    static_slice.VariableDefinition("left", 3),
+                    static_slice.VariableDefinition("right", 3),
+                    static_slice.VariableDefinition("annotated", 4),
+                ],
+            )
+            definitions = static_slice.backward_slice(tree, variables)
+
+            self.assertEqual(
+                definitions,
+                [
+                    static_slice.TargetDefinition("total", "3", True, []),
+                    static_slice.TargetDefinition("doubled", "total * 2", False, ["total"]),
+                    static_slice.TargetDefinition("left", "doubled + offset", False, ["doubled", "offset"]),
+                    static_slice.TargetDefinition("right", "doubled + offset", False, ["doubled", "offset"]),
+                    static_slice.TargetDefinition("annotated", "right", False, ["right"]),
+                ],
+            )
+    def test_transfer_functions_list_conditional_outputs(self) -> None:
+        definitions = [
+            static_slice.TargetDefinition("a", "5", True, []),
+            static_slice.TargetDefinition("c", "True", True, []),
+            static_slice.TargetDefinition(
+                "y", "a * 2 if c else a // 2", False, ["c", "a", "a"]
+            )
+        ]
+
+        self.assertEqual(
+            static_slice.transfer_function_gen(definitions),
+            {
+                "a": [({"a": 5}, 5)],
+                "c": [({"c": True}, True), ({"c": False}, False)],
+                "y": [({"c": True, "a": 5}, 10), ({"c": False, "a": 5}, 2)],
+            },
+        )
+
+    def test_transfer_functions_limit_combinations(self) -> None:
+        inputs = [
+            static_slice.TargetDefinition(f"input_{index}", "True", True, [])
+            for index in range(7)
+        ]
+        names = [definition.target for definition in inputs]
+        definitions = inputs + [
+            static_slice.TargetDefinition(
+                "result", " + ".join(names), False, names
+            )
+        ]
+
+        transfer_functions = static_slice.transfer_function_gen(definitions)
+
+        self.assertEqual(
+            len(transfer_functions["result"]),
+            static_slice.MAX_DISCRETE_COMBINATIONS,
+        )
+
     def test_file_discovery_uses_config_root_and_finds_tests(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_name:
             root_dir = Path(temp_dir_name).resolve()

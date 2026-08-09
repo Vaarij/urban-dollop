@@ -22,7 +22,7 @@ import state_storage as storage
 from orchestrator.loop import optimize_regions
 from orchestrator.region import RegionProposal
 from orchestrator.runner_base import OptimizationState
-from orchestrator.runners import DynamicSliceRunner, StaticComplexitySliceRunner
+# from orchestrator.runners import DynamicSliceRunner, StaticComplexitySliceRunner
 
 logger = logging.getLogger(__name__)
 
@@ -400,7 +400,8 @@ def main(runtime_config: RuntimeConfig | None = None) -> int:
 
         function_graph = build_function_graph(runtime_config.target_dir, source_files)
         state = OptimizationState(runtime_config.target_dir, source_files, all_asts, function_graph, runtime_config.test_targets)
-        runners = {"dynamic": DynamicSliceRunner(), "static": StaticComplexitySliceRunner()}
+        # {"dynamic": DynamicSliceRunner(), "static": StaticComplexitySliceRunner()}
+        runners = None
         selected_runners = [runners[name] for name in runtime_config.runner_plan if name in runners]
         file_results: list[dict[str, object]] = []
         optimized_project_dir = _prepare_working_project(runtime_config)
