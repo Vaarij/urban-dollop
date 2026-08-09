@@ -17,7 +17,20 @@ clean-runs = "self_optimize.clean_runs:main"
 clean_runs = "self_optimize.clean_runs:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["self_optimize"]
+only-include = [
+    "analyze",
+    "candidates",
+    "context_builder",
+    "llm",
+    "orchestrator",
+    "project_loader",
+    "self_optimize",
+    "config.py",
+    "main.py",
+    "recovery.py",
+    "report.py",
+    "state_storage.py",
+]
 
 [tool.uv]
 package = true

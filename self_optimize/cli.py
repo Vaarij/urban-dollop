@@ -32,6 +32,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--codex-model",
         help="Optional Codex model override for candidate generation.",
     )
+    parser.add_argument(
+        "--test-command",
+        action="append",
+        default=[],
+        help="Test command to run for each candidate; repeat to run multiple commands.",
+    )
+    parser.add_argument(
+        "--benchmark-command",
+        action="append",
+        default=[],
+        help="Benchmark command to time for each candidate; repeat to run multiple commands.",
+    )
     return parser
 
 
@@ -46,6 +58,8 @@ def main(argv: list[str] | None = None) -> int:
         recovery_token=args.recovery,
         agent_count=args.agents,
         codex_model=args.codex_model,
+        test_targets=args.test_command,
+        benchmark_targets=args.benchmark_command,
     )
     config.init_config(runtime_config)
     return run_main(runtime_config)

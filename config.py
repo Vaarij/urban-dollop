@@ -146,6 +146,8 @@ def build_runtime_config(
     workspace_root: Path | None = None,
     agent_count: int = 1,
     codex_model: str | None = None,
+    test_targets: list[str] | None = None,
+    benchmark_targets: list[str] | None = None,
 ) -> RuntimeConfig:
     resolved_workspace = workspace_root.resolve() if workspace_root else Path.cwd().resolve()
     target_dir = _normalize_target_path(target, resolved_workspace)
@@ -168,6 +170,8 @@ def build_runtime_config(
         recovery_token=recovery_token,
         agent_count=agent_count,
         codex_model=codex_model,
+        test_targets=list(test_targets or []),
+        benchmark_targets=list(benchmark_targets or []),
     )
     runtime_config.resolved_secrets = _resolve_secrets(runtime_config.secret_references)
     return runtime_config

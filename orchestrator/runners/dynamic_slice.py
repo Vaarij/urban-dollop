@@ -70,13 +70,18 @@ class DynamicSliceRunner:
             seen = executed.get(str(file_path.resolve()), set())
             for symbol, start, end, score in _blocks(file_path):
                 count = sum(start <= line < end for line in seen)
-                if count:
+                proposal = RegionProposal(Criterion(file_path, symbol, start, end), ((start, end),))
+                if count and proposal.key not in state.attempted_regions:
                     candidates.append((count, file_path, symbol, start, end, score))
         if not candidates:
             return None
         count, file_path, symbol, start, end, score = max(candidates, key=lambda item: (item[0], item[5]))
-        proposal = RegionProposal(Criterion(file_path, symbol, start, end), ((start, end),), runner_name=self.name, evidence={"executed_lines": count, "complexity": score})
-        return None if proposal.key in state.attempted_regions else proposal
+        return RegionProposal(
+            Criterion(file_path, symbol, start, end),
+            ((start, end),),
+            runner_name=self.name,
+            evidence={"executed_lines": count, "complexity": score},
+        )
 
     def expand(self, state: OptimizationState, region: RegionProposal, reason: str) -> RegionProposal | None:
         return StaticComplexitySliceRunner().expand(state, region, reason)

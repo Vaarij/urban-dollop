@@ -24,7 +24,7 @@ def optimize_regions(
     while runner_index < len(runners):
         runner = runners[runner_index]
         region = runner.propose(state)
-        if region is None:
+        if region is None or region.key in state.attempted_regions:
             runner_index += 1
             stalled = 0
             continue
@@ -42,6 +42,8 @@ def optimize_regions(
                 break
             region = runner.expand(state, region, "no evidence-backed candidate")
             expansions += 1
+        if changed:
+            continue
         runner_index += 1
         stalled = 0
     return accepted
